@@ -304,8 +304,7 @@ class Converter:
     def passage_paras(self, el):
         """Return list of Para for a passage element (box, label table, grid)."""
         if el.table is None:
-            blocks = el.blocks
-            return [Para(PS_BODY2, ST_NORMAL, cs=CS_TEXT).add_ctrl(self.box_table(blocks), CS_TEXT)]
+            return self.boxed_blocks(el.blocks)
         t = el.table
         rows = V.split_label_rows(t)
         if rows:
@@ -318,8 +317,27 @@ class Converter:
             lab = self.labelled_rows(blocks)
             if lab:
                 return [Para(PS_BODY, ST_BASIC, cs=CS_TEXT).add_ctrl(self.label_table(lab), CS_TEXT)]
-            return [Para(PS_BODY2, ST_NORMAL, cs=CS_TEXT).add_ctrl(self.box_table(blocks), CS_TEXT)]
+            return self.boxed_blocks(blocks)
         return [Para(PS_BODY2, ST_NORMAL, cs=CS_TEXT).add_ctrl(self.grid_table(t), CS_TEXT)]
+
+    def boxed_blocks(self, blocks):
+        """Text goes into the passage box; pictures stand alone (no frame)."""
+        out = []
+        pending = []
+
+        def flush():
+            if any(not isinstance(b, V.Para) or b.text.strip() for b in pending):
+                out.append(Para(PS_BODY2, ST_NORMAL, cs=CS_TEXT).add_ctrl(self.box_table(pending), CS_TEXT))
+            pending.clear()
+
+        for b in blocks:
+            if isinstance(b, V.Picture):
+                flush()
+                out.append(self.picture_para(b, COLUMN_WIDTH))
+            else:
+                pending.append(b)
+        flush()
+        return out
 
     def labelled_rows(self, blocks):
         """Paragraphs starting with (가)/(나) or ㈎/㈏ -> [(label, blocks)]."""
