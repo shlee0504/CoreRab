@@ -160,6 +160,7 @@ class Converter:
         self.di.reset_caret()
         self.ctx = Ctx(self.di)
         self.warnings = []
+        self.tail = None
 
     # -- char / para shapes
     def cs(self, base, fmt=frozenset(), red=False):
@@ -254,6 +255,8 @@ class Converter:
                 missing = [k for k in range(c.col, c.col + c.colspan) if k not in colw]
                 for k in missing:
                     colw[k] = c.width // c.colspan
+        if t.cols >= 6:                       # e.g. 정답표: equal columns
+            colw = {k: (2200 if t.cols % 3 == 0 and k % 3 == 1 else 1000) for k in range(t.cols)}
         total = sum(colw.get(k, 1000) for k in range(t.cols))
         scale = width / float(total)
         widths = [int(colw.get(k, 1000) * scale) for k in range(t.cols)]
@@ -529,10 +532,39 @@ class Converter:
         # drop trailing blanks
         while len(paras) > 1 and not paras[-1].segments:
             paras.pop()
+        if self.tail and self.answer_mode:
+            paras.extend(self.tail_paras(self.tail))
         for i, p in enumerate(paras):
             r, _ = p.build(self.ctx, 0, last=(i == len(paras) - 1))
             recs.extend(r)
         return recs
+
+    def tail_paras(self, blocks):
+        """Answer table and explanations kept from the source (new page)."""
+        out = []
+        bold = self.cs(CS_TEXT, frozenset({'b'}))
+        for b in blocks:
+            if isinstance(b, V.Table):
+                t = self.grid_table(b, BOX_WIDTH, header_rows=1)
+                out.append(Para(PS_BODY2, ST_NORMAL, cs=CS_TEXT).add_ctrl(t, CS_TEXT))
+                continue
+            text = b.text.strip()
+            if not text:
+                out.append(self.blank())
+            elif text in ('정답표', '해설', '정답 및 해설'):
+                out.append(self.text_para(text, PS_CENTER, ST_NORMAL, bold))
+            elif re.match(r'^\d+\s*번\s+정답', text):
+                out.append(Para(PS_BODY, ST_BASIC, cs=bold).add_text(re.sub(r'\s+', ' ', text), bold))
+            else:
+                ps = self.ps_box(b) if b.hanging or re.match(r'^[①-⑤ㄱ-ㅎ]', text) else PS_BODY
+                if re.match(r'^[①-⑤]|^[ㄱ-ㅎ]\.', text):
+                    ps = self.di.derive_para_shape(PS_BODY, indent=hanging_indent(text))
+                out.append(self.runs_para(b.runs, ps, ST_BASIC, CS_TEXT))
+        while out and not out[0].segments:
+            out.pop(0)
+        if out:
+            out[0].split = 0x04
+        return out
 
     def prv_text(self, problems):
         out = []
@@ -577,6 +609,7 @@ def convert(template, source, out_path, answer_mode=True, title=None):
     if title is None:
         title = re.sub(r'\s*\([^)]*\)\s*$', '', doc.title or '').strip() or '실전 문제'
     conv = Converter(template, answer_mode=answer_mode)
+    conv.tail = getattr(doc, 'tail', None)
     size = conv.write(problems, title, out_path)
     return dict(problems=len(problems), title=title, size=size, warnings=conv.warnings,
                 images=len(conv.ctx.bindata))

@@ -226,11 +226,24 @@ def parse(path):
     problems = {}
     answers = {}
     shared = None
+    doc.tail = []           # 정답표 / 해설 blocks after the problems
+    in_tail = False
     for child in body:
+        if child.tag in (W + 'p', W + 'tbl'):
+            text = ''.join(t.text or '' for t in child.iter(W + 't')).strip()
+            if not in_tail and child.tag == W + 'p' and text in ('정답표', '정답', '정답 및 해설', '해설'):
+                in_tail = True
+            if in_tail:
+                if child.tag == W + 'tbl':
+                    answers.update(_answer_table(doc, child))
+                    doc.tail.append(doc.table(child))
+                else:
+                    doc.tail.append(doc.para(child))
+                continue
         if child.tag == W + 'p':
             text = ''.join(t.text or '' for t in child.iter(W + 't')).strip()
             if not doc.title and text:
-                doc.title = re.sub(r'\s*실전\s*문제\s*$', '', text).strip()
+                doc.title = re.sub(r'\s*실전\s*문제\s*', ' ', text).strip()
             continue
         if child.tag != W + 'tbl':
             continue

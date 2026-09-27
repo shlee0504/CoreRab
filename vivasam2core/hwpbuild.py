@@ -65,6 +65,7 @@ class Para:
         self.segments = segments or []
         self.width = width          # available line width (HWPUNIT)
         self.cs = cs                # char shape of the paragraph mark
+        self.split = 0              # 0x04: page break before
 
     def add_text(self, text, cs):
         if text:
@@ -126,7 +127,7 @@ class Para:
         lines, height = self._line_segs(ctx, char_starts, pos, y0)
         recs = []
         hdr = struct.pack('<IIHBBHHHIH', nchars | (LAST_PARA if last else 0), mask,
-                          self.ps, self.style, 0, len(char_shapes), 0, len(lines),
+                          self.ps, self.style, self.split, len(char_shapes), 0, len(lines),
                           0x80000000, 0)
         recs.append(Record(TAG_PARA_HEADER, level, hdr))
         if nchars > 1:
