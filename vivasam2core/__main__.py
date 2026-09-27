@@ -3,8 +3,7 @@ import argparse
 import os
 import sys
 
-from .convert import convert
-from .vivasam import parse
+from .convert import convert, parse_source
 
 
 def main(argv=None):
@@ -22,8 +21,9 @@ def main(argv=None):
 
     os.makedirs(args.outdir, exist_ok=True)
     for src in args.sources:
-        doc, _ = parse(src)
-        base = '비바샘 %s' % (doc.title or os.path.splitext(os.path.basename(src))[0])
+        doc, _ = parse_source(src)
+        name = doc.title or os.path.splitext(os.path.basename(src))[0]
+        base = name if src.lower().endswith('.docx') else '비바샘 %s' % name
         jobs = [(True, base + '(심화)(답지).hwp')]
         if args.student:
             jobs.append((False, base + '(심화).hwp'))

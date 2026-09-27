@@ -1,0 +1,267 @@
+"""Parse a Word (.docx) problem set into the same problem model as vivasam.py.
+
+Expected layout (as in "서양 철학 사상 실전 문제"): each problem sits in a
+one-cell outer table holding the stem "N. ...", nested tables for passages,
+(가)/(나) tables, pictures and the "< 보기 >" box, then "① ..." choices.
+An answer table ("정답표": 번호/정답/채점 columns) follows the problems.
+"""
+import io
+import re
+import zipfile
+
+import lxml.etree as ET
+
+from . import vivasam as V
+
+W = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
+A = '{http://schemas.openxmlformats.org/drawingml/2006/main}'
+R = '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}'
+WP = '{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}'
+
+STEM_RE = re.compile(r'^\s*(\d{1,3})\s*\.\s*')
+PREFIX_HINT = re.compile(r'^\s*(?:[갑을병정무]\s*:|•|[ㄱ-ㅎ]\.)')
+
+
+class DocxDoc:
+    def __init__(self, path):
+        self.zip = zipfile.ZipFile(path)
+        self.root = ET.fromstring(self.zip.read('word/document.xml'))
+        rels = ET.fromstring(self.zip.read('word/_rels/document.xml.rels'))
+        self.rels = {r.get('Id'): r.get('Target') for r in rels}
+        self.title = ''
+
+    # -- runs / paragraphs
+    def runs(self, p):
+        out = []
+        for r in p.iter(W + 'r'):
+            fmt = set()
+            rp = r.find(W + 'rPr')
+            if rp is not None:
+                u = rp.find(W + 'u')
+                if u is not None and u.get(W + 'val', 'single') != 'none':
+                    fmt.add('u')
+                b = rp.find(W + 'b')
+                if b is not None and b.get(W + 'val', 'true') not in ('0', 'false'):
+                    fmt.add('b')
+                va = rp.find(W + 'vertAlign')
+                if va is not None:
+                    v = va.get(W + 'val')
+                    if v == 'subscript':
+                        fmt.add('sub')
+                    elif v == 'superscript':
+                        fmt.add('sup')
+            text = ''
+            for x in r:
+                if x.tag == W + 't':
+                    text += x.text or ''
+                elif x.tag == W + 'tab':
+                    text += ' '
+            if text:
+                out.append(V.Run(text, frozenset(fmt)))
+        return V._merge_runs(out)
+
+    def para(self, p):
+        pp = p.find(W + 'pPr')
+        align = 'justify'
+        hanging = False
+        if pp is not None:
+            jc = pp.find(W + 'jc')
+            if jc is not None and jc.get(W + 'val') == 'center':
+                align = 'center'
+            ind = pp.find(W + 'ind')
+            if ind is not None and ind.get(W + 'hanging'):
+                hanging = True
+        para = V.Para(self.runs(p), align, hanging)
+        if not hanging and PREFIX_HINT.match(para.text):
+            para.hanging = True
+        return para
+
+    def pictures(self, p):
+        pics = []
+        for d in p.iter(WP + 'inline', WP + 'anchor'):
+            blip = next(d.iter(A + 'blip'), None)
+            ext = d.find(WP + 'extent')
+            if blip is None or ext is None:
+                continue
+            target = self.rels[blip.get(R + 'embed')]
+            data = self.zip.read('word/' + target.lstrip('/'))
+            w = int(int(ext.get('cx')) / 127)
+            h = int(int(ext.get('cy')) / 127)
+            try:
+                from PIL import Image
+                im = Image.open(io.BytesIO(data))
+                ow, oh = im.size[0] * 75, im.size[1] * 75
+            except Exception:
+                ow, oh = w, h
+            pics.append(V.Picture(data, V._sniff_ext(data, 'png'), w, h, ow, oh, (0, 0, ow, oh)))
+        return pics
+
+    def blocks(self, container):
+        blocks = []
+        for c in container:
+            if c.tag == W + 'p':
+                pics = self.pictures(c)
+                para = self.para(c)
+                if para.text.strip():
+                    blocks.append(para)
+                blocks.extend(pics)
+                if not pics and not para.text.strip():
+                    blocks.append(para)
+            elif c.tag == W + 'tbl':
+                blocks.append(self.table(c))
+        while blocks and isinstance(blocks[0], V.Para) and not blocks[0].text.strip():
+            blocks.pop(0)
+        while blocks and isinstance(blocks[-1], V.Para) and not blocks[-1].text.strip():
+            blocks.pop()
+        return blocks
+
+    def table(self, tbl):
+        cells = []
+        rows = tbl.findall(W + 'tr')
+        occupied = {}
+        for ri, tr in enumerate(rows):
+            ci = 0
+            for tc in tr.findall(W + 'tc'):
+                while (ri, ci) in occupied:
+                    ci += 1
+                pr = tc.find(W + 'tcPr')
+                span = 1
+                width = 2000
+                vmerge = None
+                if pr is not None:
+                    gs = pr.find(W + 'gridSpan')
+                    if gs is not None:
+                        span = int(gs.get(W + 'val'))
+                    tw = pr.find(W + 'tcW')
+                    if tw is not None and tw.get(W + 'type') == 'dxa':
+                        width = int(int(tw.get(W + 'w')) * 5)   # twips -> HWPUNIT
+                    vm = pr.find(W + 'vMerge')
+                    if vm is not None:
+                        vmerge = vm.get(W + 'val', 'continue')
+                if vmerge == 'continue':
+                    for c in cells:
+                        if c.col == ci and c.row + c.rowspan == ri:
+                            c.rowspan += 1
+                    ci += span
+                    continue
+                cells.append(V.Cell(ri, ci, 1, span, width, 1000, self.blocks(tc)))
+                ci += span
+        ncols = max((c.col + c.colspan for c in cells), default=1)
+        width = sum(c.width for c in cells if c.row == 0)
+        return V.Table(len(rows), ncols, cells, width)
+
+
+def _elements(doc, blocks):
+    els = []
+    for b in blocks:
+        if isinstance(b, V.Table):
+            kind, info = V.classify_table(b)
+            if kind == 'passage' and b.rows == 1 and b.cols == 1:
+                inner = b.cells[0].blocks
+                first = next((x for x in inner if isinstance(x, V.Para)), None)
+                m = V.LABEL_RE.match(first.text) if first is not None else None
+                if m:
+                    label = re.sub(r'\s+', '', m.group(1))
+                    body = inner[inner.index(first) + 1:]
+                    if label == '보기':
+                        els.append(V.Element('bogi', label='보기',
+                                             items=[x for x in body if isinstance(x, V.Para)]))
+                    else:
+                        els.append(V.Element('keybox', label=m.group(1).strip(), blocks=body))
+                    continue
+            if kind == 'bogi':
+                els.append(V.Element('bogi', label=info[0], items=[x for x in info[1] if isinstance(x, V.Para)]))
+            elif kind == 'keybox':
+                els.append(V.Element('keybox', label=info[0], blocks=info[1]))
+            elif kind == 'inline_choices':
+                els.append(V.Element('inline_choices', items=info))
+            elif kind == 'match_table':
+                els.append(V.Element('match_table', table=info))
+            else:
+                els.append(V.Element('passage', table=b))
+        elif isinstance(b, V.Picture):
+            els.append(V.Element('passage', blocks=[b]))
+        else:
+            t = b.text.strip()
+            if not t:
+                continue
+            elif t[0] in V.CIRCLED[:5]:
+                para = V.Para(list(b.runs), b.align)
+                V._strip_prefix(para, 2 if len(t) > 1 and t[1] in '  ' else 1)
+                if els and els[-1].kind == 'choices':
+                    els[-1].items.append(para)
+                else:
+                    els.append(V.Element('choices', items=[para]))
+            elif t[0] in V.PAREN_NUM:
+                els.append(V.Element('subq', blocks=[b]))
+            else:
+                els.append(V.Element('text', blocks=[b]))
+    merged = []
+    for e in els:
+        if merged and e.kind == 'space' and merged[-1].kind == 'space':
+            merged[-1].count += 1
+        else:
+            merged.append(e)
+    while merged and merged[-1].kind == 'space':
+        merged.pop()
+    while merged and merged[0].kind == 'space':
+        merged.pop(0)
+    return merged
+
+
+def _answer_table(doc, tbl):
+    """번호/정답/채점 triples -> {number: answer}."""
+    answers = {}
+    for tr in tbl.findall(W + 'tr'):
+        texts = [''.join(t.text or '' for t in tc.iter(W + 't')).strip() for tc in tr.findall(W + 'tc')]
+        for k in range(0, len(texts) - 1, 3):
+            if texts[k].isdigit() and texts[k + 1]:
+                answers[int(texts[k])] = texts[k + 1]
+    return answers
+
+
+def parse(path):
+    doc = DocxDoc(path)
+    body = doc.root.find(W + 'body')
+    problems = {}
+    answers = {}
+    shared = None
+    for child in body:
+        if child.tag == W + 'p':
+            text = ''.join(t.text or '' for t in child.iter(W + 't')).strip()
+            if not doc.title and text:
+                doc.title = re.sub(r'\s*실전\s*문제\s*$', '', text).strip()
+            continue
+        if child.tag != W + 'tbl':
+            continue
+        rows = child.findall(W + 'tr')
+        first_text = ''.join(t.text or '' for t in child.iter(W + 't'))
+        if '정답' in first_text[:40] and '번호' in first_text[:40]:
+            answers.update(_answer_table(doc, child))
+            continue
+        if len(rows) != 1 or len(rows[0].findall(W + 'tc')) != 1:
+            continue
+        blocks = doc.blocks(rows[0].find(W + 'tc'))
+        # optional shared intro "[20~21] ..." before the stem
+        idx = next((i for i, b in enumerate(blocks)
+                    if isinstance(b, V.Para) and STEM_RE.match(b.text)), None)
+        if idx is None:
+            continue
+        pre = blocks[:idx]
+        stem = blocks[idx]
+        num = int(STEM_RE.match(stem.text).group(1))
+        para = V.Para(list(stem.runs), stem.align)
+        V._strip_prefix(para, STEM_RE.match(stem.text).end())
+        prob = V.Problem(para, _elements(doc, blocks[idx + 1:]))
+        if pre and isinstance(pre[0], V.Para) and pre[0].text.strip().startswith('['):
+            shared = (pre[0], _elements(doc, pre[1:]))
+        if shared is not None:
+            prob.shared_intro, prob.shared = shared
+            shared = None
+        problems[num] = prob
+    out = []
+    for num in sorted(problems):
+        p = problems[num]
+        p.answer = answers.get(num, '')
+        out.append(p)
+    return doc, out

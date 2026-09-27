@@ -377,6 +377,12 @@ class Converter:
                     drop_combo = True
             if not drop_combo:
                 self.warnings.append('%d번: <보기> 정답 조합을 해석하지 못해 선지를 유지함' % number)
+        direct_labels = False
+        if bogi_el is not None and combo is None and answer_idx is None:
+            want = [x.strip() for x in re.split(r'[,，]', prob.answer) if x.strip()]
+            if want and all(re.fullmatch(r'[ㄱ-ㅎ]|[갑을병정무]', w) for w in want):
+                red_labels = set(want)
+                direct_labels = True
 
         # shared passage (ITEM_PARAGRAPH)
         if prob.shared is not None:
@@ -395,7 +401,7 @@ class Converter:
             stem_runs = self.select_all_stem(stem_runs)
         out.append(self.runs_para(stem_runs, PS_STEM, ST_BASIC, CS_TEXT))
 
-        sub_answers = split_answer_parts(prob.answer) if answer_idx is None else {}
+        sub_answers = split_answer_parts(prob.answer) if answer_idx is None and not direct_labels else {}
         current_sub = 0
         self._answer_left = 0
         placed = set()
@@ -559,8 +565,15 @@ class Converter:
         return hwp5.write_hwp(out_path, streams, self.tpl.clsid, order=order)
 
 
+def parse_source(source):
+    if source.lower().endswith('.docx'):
+        from . import docx
+        return docx.parse(source)
+    return V.parse(source)
+
+
 def convert(template, source, out_path, answer_mode=True, title=None):
-    doc, problems = V.parse(source)
+    doc, problems = parse_source(source)
     if title is None:
         title = re.sub(r'\s*\([^)]*\)\s*$', '', doc.title or '').strip() or '실전 문제'
     conv = Converter(template, answer_mode=answer_mode)
