@@ -106,6 +106,8 @@ class TemplateParts:
 
 PREFIX_RE = re.compile(r'^(\s*(?:•|·|○|-|※)\s*|\s*[갑을병정무]\s*[:.]\s*|\s*[가-힣]{1,3}\s*:\s*|'
                        r'\s*\((?:[가-하])\)\s*|\s*[㈎-㈛]\s*|\s*[ㄱ-ㅎ]\.\s*|\s*[A-Z]\.\s*|\s*[①-⑩⑴-⑽]\s*)')
+LINE_LABEL_RE = re.compile(r'^\s*([A-E]|[갑을병정무])\s*:')
+COMBO_RE = re.compile(r'^\s*([A-E]|[갑을병정무])(\s*,\s*([A-E]|[갑을병정무]))*\s*$')
 SECTION_LINE = re.compile(r'^\s*■')
 LABEL_START_RE = re.compile(r'^\s*(\([가-하]\)|[㈎-㈛])\s*')
 BOGI_LABEL_RE = re.compile(r'^\s*([ㄱ-ㅎ]|[갑을병정무])\s*[.．]')
@@ -162,6 +164,8 @@ class Converter:
         self.ctx = Ctx(self.di)
         self.warnings = []
         self.tail = None
+        self._red_lines = set()
+        self._red_hits = 0
 
     # -- char / para shapes
     def cs(self, base, fmt=frozenset(), red=False):
@@ -225,7 +229,10 @@ class Converter:
                     ps = PS_CENTER
                 else:
                     ps = self.ps_box(b, base_ps)
-                paras.append(self.runs_para(b.runs, ps, style if ps != PS_CENTER else ST_NORMAL, base_cs))
+                m = LINE_LABEL_RE.match(b.text)
+                red = bool(m and m.group(1) in self._red_lines)
+                self._red_hits += red
+                paras.append(self.runs_para(b.runs, ps, style if ps != PS_CENTER else ST_NORMAL, base_cs, red=red))
         if not paras:
             paras.append(self.blank(PS_BODY, ST_BASIC))
         return paras
@@ -381,6 +388,14 @@ class Converter:
                     drop_combo = True
             if not drop_combo:
                 self.warnings.append('%d번: <보기> 정답 조합을 해석하지 못해 선지를 유지함' % number)
+        # "…학생만을 고른 것은?" with choices like ① 갑, 을: select-all, mark lines
+        self._red_lines = set()
+        self._red_hits = 0
+        if bogi_el is None and combo is not None and all(COMBO_RE.match(i.text) for i in combo.items):
+            if answer_idx and answer_idx <= len(combo.items):
+                self._red_lines = {x.strip() for x in combo.items[answer_idx - 1].text.split(',')}
+                drop_combo = True
+                red_labels = set(self._red_lines)
         direct_labels = False
         if bogi_el is not None and combo is None and answer_idx is None:
             want = [x.strip() for x in re.split(r'[,，]', prob.answer) if x.strip()]
@@ -475,6 +490,9 @@ class Converter:
                     if key not in placed:
                         self.place_answer(sub_answers[key], prob, out)
                         placed.add(key)
+            elif self._red_lines and not self._red_hits:
+                out.append(self.text_para('정답: ' + ', '.join(sorted(self._red_lines, key='ABCDE갑을병정무'.index)),
+                                          PS_BODY, ST_BASIC, self.cs(CS_TEXT, red=True)))
             elif not had_choices and not drop_combo and not red_labels:
                 out.append(self.text_para('정답: %s  (원본 자료에 선지가 없습니다.)' % prob.answer.strip(),
                                           PS_BODY, ST_BASIC, self.cs(CS_TEXT, red=True)))
@@ -482,6 +500,7 @@ class Converter:
         elif not had_choices and answer_idx is None and not any(e.kind == 'space' for e in elements):
             for _ in range(3):
                 out.append(self.blank(PS_BODY, ST_BASIC))
+        self._red_lines = set()
         out.append(self.blank())
 
     def place_answer(self, text, prob, out):
@@ -500,8 +519,8 @@ class Converter:
         out = []
         done = False
         for r in runs:
-            if not done and re.search(r'<\s*보\s*기\s*>에서\s*고른', r.text):
-                r = V.Run(re.sub(r'(<\s*보\s*기\s*>에서)\s*고른', r'\1 있는 대로 고른', r.text, count=1), r.fmt)
+            if not done and re.search(r'(<\s*보\s*기\s*>에서|만을)\s*고른', r.text):
+                r = V.Run(re.sub(r'(<\s*보\s*기\s*>에서|만을)\s*고른', r'\1 있는 대로 고른', r.text, count=1), r.fmt)
                 done = True
             out.append(r)
         return out
