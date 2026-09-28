@@ -106,6 +106,7 @@ class TemplateParts:
 
 PREFIX_RE = re.compile(r'^(\s*(?:•|·|○|-|※)\s*|\s*[갑을병정무]\s*[:.]\s*|\s*[가-힣]{1,3}\s*:\s*|'
                        r'\s*\((?:[가-하])\)\s*|\s*[㈎-㈛]\s*|\s*[ㄱ-ㅎ]\.\s*|\s*[A-Z]\.\s*|\s*[①-⑩⑴-⑽]\s*)')
+SECTION_LINE = re.compile(r'^\s*■')
 LABEL_START_RE = re.compile(r'^\s*(\([가-하]\)|[㈎-㈛])\s*')
 BOGI_LABEL_RE = re.compile(r'^\s*([ㄱ-ㅎ]|[갑을병정무])\s*[.．]')
 
@@ -398,6 +399,11 @@ class Converter:
                     out.append(self.runs_para(el.blocks[0].runs, PS_BODY, ST_BASIC, CS_TEXT))
             out.append(self.blank())
 
+        section = getattr(prob, 'section', None)
+        if section is not None:
+            bold = self.cs(CS_TEXT, frozenset({'b'}))
+            out.append(Para(PS_BODY, ST_BASIC, cs=bold).add_text(section.text.strip(), bold))
+
         # stem
         stem_runs = list(prob.stem.runs)
         if drop_combo:
@@ -553,6 +559,13 @@ class Converter:
                 out.append(self.blank())
             elif text in ('정답표', '해설', '정답 및 해설'):
                 out.append(self.text_para(text, PS_CENTER, ST_NORMAL, bold))
+            elif SECTION_LINE.match(text):
+                out.append(Para(PS_BODY, ST_BASIC, cs=bold).add_text(text, bold))
+            elif re.match(r'^\d+\s*\.\s*정답', text):
+                m = re.match(r'^(\d+\s*\.\s*정답\s*\S+)\s*(.*)$', text)
+                p = Para(PS_BODY, ST_BASIC, cs=CS_TEXT).add_text(m.group(1) + '  ', bold)
+                p.add_text(m.group(2), CS_TEXT)
+                out.append(p)
             elif re.match(r'^\d+\s*번\s+정답', text):
                 out.append(Para(PS_BODY, ST_BASIC, cs=bold).add_text(re.sub(r'\s+', ' ', text), bold))
             else:

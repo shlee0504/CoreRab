@@ -42,7 +42,7 @@ class DocxDoc:
                     fmt.add('u')
                 b = rp.find(W + 'b')
                 if b is not None and b.get(W + 'val', 'true') not in ('0', 'false'):
-                    fmt.add('b')
+                    pass   # bold is not carried over (template has no bold emphasis)
                 va = rp.find(W + 'vertAlign')
                 if va is not None:
                     v = va.get(W + 'val')
@@ -186,8 +186,17 @@ def _elements(doc, blocks):
             if not t:
                 continue
             elif t[0] in V.CIRCLED[:5]:
+                parts = [x.strip() for x in re.split(r'[①②③④⑤]', t) if x.strip()]
+                if len(parts) > 1:
+                    items = [V.Para([V.Run(x)]) for x in parts]
+                    if els and els[-1].kind == 'inline_choices':
+                        els[-1].items.extend(items)
+                    else:
+                        els.append(V.Element('inline_choices', items=items))
+                    continue
                 para = V.Para(list(b.runs), b.align)
-                V._strip_prefix(para, 2 if len(t) > 1 and t[1] in '  ' else 1)
+                V._strip_prefix(para, 2 if len(t) > 1 and t[1] in ' \u00a0' else 1)
+                para = V.Para([V.Run(re.sub(r' {2,}', '   ', r.text), r.fmt) for r in para.runs], para.align)
                 if els and els[-1].kind == 'choices':
                     els[-1].items.append(para)
                 else:
@@ -215,7 +224,7 @@ def _answer_table(doc, tbl):
     for tr in tbl.findall(W + 'tr'):
         texts = [''.join(t.text or '' for t in tc.iter(W + 't')).strip() for tc in tr.findall(W + 'tc')]
         for k in range(0, len(texts) - 1, 3):
-            if texts[k].isdigit() and texts[k + 1]:
+            if texts[k].isdecimal() and texts[k + 1]:
                 answers[int(texts[k])] = texts[k + 1]
     return answers
 
@@ -272,9 +281,75 @@ def parse(path):
             prob.shared_intro, prob.shared = shared
             shared = None
         problems[num] = prob
+    if not problems:
+        return parse_flat(doc)
     out = []
     for num in sorted(problems):
         p = problems[num]
         p.answer = answers.get(num, '')
         out.append(p)
+    return doc, out
+
+
+TAIL_START = re.compile(r'^\s*(정답\s*및\s*해설|정답표|해설)\s*$')
+SECTION_RE = re.compile(r'^\s*■')
+ANSWER_LINE = re.compile(r'^\s*(\d{1,3})\s*\.\s*정답\s*([①-⑤](?:\s*,\s*[①-⑤])*|[ㄱ-ㅎ](?:\s*,\s*[ㄱ-ㅎ])*)')
+
+
+def parse_flat(doc):
+    """Problems written as plain paragraphs: 'N. stem', passage tables, choices."""
+    body = doc.root.find(W + 'body')
+    doc.tail = []
+    doc.title = ''
+    problems = []
+    cur = None
+    section = None
+    in_tail = False
+    started = False
+    for child in body:
+        if child.tag not in (W + 'p', W + 'tbl'):
+            continue
+        if child.tag == W + 'p':
+            para = doc.para(child)
+            text = para.text.strip()
+            if not doc.title and text:
+                doc.title = re.sub(r'\s*실전\s*문제\s*', ' ', text).strip()
+            if not in_tail and started and TAIL_START.match(text):
+                in_tail = True
+            if in_tail:
+                doc.tail.append(para)
+                continue
+            if SECTION_RE.match(text):
+                started = True
+                section = para
+                continue
+            m = STEM_RE.match(text)
+            if m and started:
+                stem = V.Para(list(para.runs), para.align)
+                V._strip_prefix(stem, m.end())
+                cur = [int(m.group(1)), stem, [], section]
+                section = None
+                problems.append(cur)
+                continue
+            if cur is not None:
+                if text:
+                    cur[2].append(para)
+                cur[2].extend(doc.pictures(child))
+        else:
+            if in_tail:
+                doc.tail.append(doc.table(child))
+            elif cur is not None:
+                cur[2].append(doc.table(child))
+    answers = {}
+    for b in doc.tail:
+        if isinstance(b, V.Para):
+            m = ANSWER_LINE.match(b.text)
+            if m:
+                answers[int(m.group(1))] = m.group(2)
+    out = []
+    for num, stem, blocks, sec in problems:
+        prob = V.Problem(stem, _elements(doc, blocks))
+        prob.answer = answers.get(num, '')
+        prob.section = sec
+        out.append(prob)
     return doc, out
