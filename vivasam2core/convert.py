@@ -452,6 +452,8 @@ class Converter:
         stem_runs = list(prob.stem.runs)
         if drop_combo:
             stem_runs = self.select_all_stem(stem_runs)
+        # 발문은 굵게
+        stem_runs = [V.Run(r.text, frozenset(r.fmt) | {'b'}) for r in stem_runs]
         out.append(self.runs_para(stem_runs, PS_STEM, ST_BASIC, CS_TEXT))
 
         sub_answers = split_answer_parts(prob.answer) if answer_idx is None and not direct_labels else {}
