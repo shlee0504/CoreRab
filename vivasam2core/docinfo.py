@@ -153,12 +153,14 @@ class DocInfo:
         return self.items(TAG_PARA_SHAPE)[ps_id].data
 
     def derive_para_shape(self, base_id, align=None, indent=None, left=None,
-                          right=None, prev=None, next_=None, linespacing=None):
-        key = ('ps', base_id, align, indent, left, right, prev, next_, linespacing)
+                          right=None, prev=None, next_=None, linespacing=None, set_bits=0):
+        key = ('ps', base_id, align, indent, left, right, prev, next_, linespacing, set_bits)
         cache = self._derived
         if key in cache:
             return cache[key]
         d = bytearray(self.para_shape(base_id))
+        if set_bits:
+            struct.pack_into('<I', d, 0, struct.unpack_from('<I', d, 0)[0] | set_bits)
         if align is not None:
             code = {'justify': 0, 'left': 1, 'right': 2, 'center': 3}[align]
             prop, = struct.unpack_from('<I', d, 0)

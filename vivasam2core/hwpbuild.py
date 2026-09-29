@@ -199,6 +199,7 @@ class Para:
             heights = [ctx.cs_info(self.segments[-1][2] if self.segments else self.cs)['size']]
         segs = []
         y = y0
+        spacing = 0
         for k, (a, b) in enumerate(lines):
             hs = heights[a:b] if b > a else [heights[min(a, len(heights) - 1)]]
             h = max(hs)
@@ -212,7 +213,20 @@ class Para:
             segs.append(struct.pack('<IiiiiiiiI', start_unit, y, h, text_h, base, spacing,
                                     0, width, tag))
             y += h + spacing
+        # 한글 does not count the spacing below the last line of a cell
+        self.last_spacing = spacing
         return segs, y - y0
+
+
+def para_spacing(ctx, p):
+    """Space above and below a paragraph (문단 위/아래 간격)."""
+    info = ctx.ps_info(p.ps)
+    extra = 0
+    for seg in p.segments:
+        outer = getattr(seg[1], 'outer', None) if seg[0] == 'c' else None
+        if outer:
+            extra += outer[2] + outer[3]
+    return (info['prev'] + info['next']) // 2 + extra
 
 
 def _break_measured(chars, first_w, other_w):
@@ -261,7 +275,8 @@ class Table:
     ctrl_id = CTRL_TBL
 
     def __init__(self, n_rows, n_cols, cells, hdr_props=0x082A2311, tbl_props=0x04000006,
-                 inner=(510, 510, 141, 141), bf=3, outer=(283, 283, 283, 283)):
+                 inner=(510, 510, 141, 141), bf=3, outer=(283, 283, 283, 283), row_extra=0):
+        self.row_extra = row_extra
         self.n_rows, self.n_cols = n_rows, n_cols
         self.cells = sorted(cells, key=lambda c: (c.row, c.col))
         self.hdr_props = hdr_props
@@ -286,8 +301,10 @@ class Table:
             for i, p in enumerate(c.paras):
                 r, h = p.build(ctx, level + 1, last=(i == len(c.paras) - 1), y0=y)
                 recs.extend(r)
-                y += h
-            need = y + c.margins[2] + c.margins[3]
+                y += h + para_spacing(ctx, p)
+            if c.paras:
+                y -= getattr(c.paras[-1], 'last_spacing', 0)
+            need = y + c.margins[2] + c.margins[3] + self.row_extra * c.rowspan
             cell_recs.append((c, recs, need))
             if c.rowspan == 1:
                 row_need[c.row] = max(row_need.get(c.row, 0), need, c.min_height)
@@ -423,6 +440,7 @@ class TemplateTable:
         delta = level - self.base_level
         body = []
         row_need = {}
+        spans = []
         for lh, paras in self.cells:
             row, col = self.cell_pos(lh)
             cspan, rspan = struct.unpack_from('<HH', lh.data, 12)
@@ -439,14 +457,23 @@ class TemplateTable:
                     p.width = cell_w - ml - mr
                     recs, h = p.build(ctx, level + 1, last=(i == len(new) - 1), y0=y)
                     body.extend(recs)
-                    y += h
-                need = max(stored_h, y + mt + mb)
+                    y += h + para_spacing(ctx, p)
+                if new:
+                    y -= getattr(new[-1], 'last_spacing', 0)
+                need = y + mt + mb
             else:
                 body.append(lh.copy(delta))
                 for g in paras:
                     body.extend(r.copy(delta) for r in g)
             if rspan == 1:
                 row_need[row] = max(row_need.get(row, 0), need)
+            else:
+                spans.append((row, rspan, need))
+        for row, rspan, need in spans:
+            have = sum(row_need.get(r, 0) for r in range(row, row + rspan))
+            if need > have:
+                last = row + rspan - 1
+                row_need[last] = row_need.get(last, 0) + need - have
         self._height = sum(row_need.values())
         hd = bytearray(self.header.data)
         struct.pack_into('<I', hd, 20, self._height)

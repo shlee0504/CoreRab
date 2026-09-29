@@ -45,10 +45,13 @@ NOTE_SIZE = 800            # ※ 용어 풀이: 8pt
 # column layout (HWPUNIT): body height of the template page, and safety
 # margins because 한글 breaks lines a little differently from our estimate
 COLUMN_HEIGHT = 84188 - 2 * 1417 - 4251 - 2835
-FILL = 0.94                # plan columns this full at most
-SPREAD = 0.8               # share this much of the room left between problems
+SAFETY = 500               # room kept free at the bottom of a column (our
+                           # estimate of a problem's height is close to 한글's)
 FIRST_LINE = 1600          # the (empty) first paragraph of the page
-TABLE_MARGIN = 600         # outer margins of a table/box
+# space 한글 adds around objects beyond our estimate of their height
+# (fitted against files saved by 한글)
+GRID_ROW_EXTRA = 283        # 한글 makes each row of a data table this much taller
+OBJECT_EXTRA = {'Table': 566, 'TemplateTable': 1177, 'Picture': 0}
 
 BOX_WIDTH = 27256
 LABEL_COL = 2853
@@ -308,7 +311,8 @@ class Converter:
             cells.append(Cell(c.row, c.col, w, paras, rowspan=c.rowspan, colspan=c.colspan,
                               bf=self.bf_head if shaded else BF_BOX, flags=0x01000020,
                               margins=(200, 200, 141, 141)))
-        return Table(t.rows, t.cols, cells, hdr_props=0x082A2211, tbl_props=0x04000006, bf=BF_BOX)
+        return Table(t.rows, t.cols, cells, hdr_props=0x082A2211, tbl_props=0x04000006, bf=BF_BOX,
+                     row_extra=GRID_ROW_EXTRA)
 
     def boxed_list(self, label, paras):
         """The template's "< 보기 >" box with a new label and content."""
@@ -573,32 +577,38 @@ class Converter:
     # -- document
     def build_section(self, problems, title):
         recs = list(self.tpl.preamble(title))
-        paras = []
-        starts = []
+        units = []
         for n, prob in enumerate(problems, 1):
-            starts.append(len(paras))
-            self.convert_problem(prob, n, paras)
-        # drop trailing blanks
-        while len(paras) > 1 and not paras[-1].segments:
-            paras.pop()
-        built = [p.build(self.ctx, 0) for p in paras]
-        heights = [h + self.para_extra(p) for p, (_, h) in zip(paras, built)]
-        units = [(a, b) for a, b in zip(starts, starts[1:] + [len(paras)]) if a < b]
-        breaks, gaps = self.arrange(units, heights)
-        blank = self.blank()
-        blank_recs, blank_h = blank.build(self.ctx, 0)
-        blank_h += self.para_extra(blank)
+            out = []
+            self.convert_problem(prob, n, out)
+            # the space between problems is set by the layout below
+            while out and not out[-1].segments:
+                out.pop()
+            if out:
+                units.append(out)
+        built = [[p.build(self.ctx, 0) for p in u] for u in units]
+        heights = [sum(h + self.para_extra(p) for p, (_, h) in zip(u, b))
+                   for u, b in zip(units, built)]
+        self.unit_heights = heights
+        top = self.blank()
+        top_recs, top_h = top.build(self.ctx, 0)
+        breaks, gaps = self.arrange(heights, top_h + self.para_extra(top))
+        blank_recs = top_recs
         body = []
-        for k, (a, b) in enumerate(units):
-            for i in range(a, b):
-                r = [x.copy() for x in built[i][0]]
-                if i == a and k in breaks:
-                    d = bytearray(r[0].data)
-                    d[11] |= 0x08                     # 단 나누기
-                    r[0] = Record(r[0].tag, r[0].level, d)
-                body.extend(r)
-            for _ in range(int(gaps.get(k, 0) // blank_h)):
+        for k, (u, b) in enumerate(zip(units, built)):
+            first = [x.copy() for x in b[0][0]]
+            if k in breaks:
+                # new column (단 나누기) starting with one empty line
+                t = [x.copy() for x in top_recs]
+                d = bytearray(t[0].data)
+                d[11] |= 0x08
+                t[0] = Record(t[0].tag, t[0].level, d)
+                body.extend(t)
+            for _ in range(gaps.get(k, 0)):        # empty lines (Enter) above
                 body.extend(x.copy() for x in blank_recs)
+            body.extend(first)
+            for recs_, _ in b[1:]:
+                body.extend(x.copy() for x in recs_)
         last = max(i for i, r in enumerate(body) if r.tag == TAG_PARA_HEADER and r.level == 0)
         d = bytearray(body[last].data)
         struct.pack_into('<I', d, 0, struct.unpack_from('<I', d, 0)[0] | 0x80000000)
@@ -619,40 +629,46 @@ class Converter:
         """Space around a paragraph not counted in its line heights."""
         info = self.di.para_shape_info(p.ps)
         extra = (info['prev'] + info['next']) // 2
-        if any(seg[0] == 'c' for seg in p.segments):
-            extra += TABLE_MARGIN
+        for seg in p.segments:
+            if seg[0] == 'c':
+                extra += OBJECT_EXTRA.get(type(seg[1]).__name__, 0)
         return extra
 
-    def arrange(self, units, heights):
-        """Put whole problems in each column, like a printed workbook: a
-        problem that does not fit starts the next column (단 나누기) and the
-        space left in a column is shared out between its problems.
-        Returns (units starting a column, {unit: extra space after it})."""
-        cap = COLUMN_HEIGHT * FILL
+    def arrange(self, heights, top):
+        """Lay problems out like a printed workbook: every column starts with
+        one empty line, holds only whole problems (a problem that does not
+        fit starts the next column), and the room left in a column is shared
+        out between its problems so the last one ends at the bottom.
+        Returns (problems starting a column, {problem: empty lines above it})."""
+        cap = COLUMN_HEIGHT - SAFETY
         cols = [[]]
         used = FIRST_LINE
-        spill = []
-        for k, (a, b) in enumerate(units):
-            h = sum(heights[a:b])
+        spill = set()
+        for k, h in enumerate(heights):
             if cols[-1] and used + h > cap:
                 cols.append([])
-                used = 0
-            cols[-1].append((k, h))
+                used = top
+            cols[-1].append(k)
             used += h
             if used > cap:                  # taller than a column: runs over
-                spill.append(len(cols) - 1)
+                spill.add(len(cols) - 1)
                 cols.append([])
-                used %= COLUMN_HEIGHT
+                used = top + (used % COLUMN_HEIGHT)
         cols = [c for c in cols if c]
-        breaks = {c[0][0] for c in cols[1:]}
+        breaks = {c[0] for c in cols[1:]}
         gaps = {}
         for n, col in enumerate(cols[:-1]):
             if n in spill or n - 1 in spill or len(col) < 2:
                 continue
-            first = FIRST_LINE if n == 0 else 0
-            left = (cap - first - sum(h for _, h in col)) * SPREAD
-            for k, _ in col[:-1]:
-                gaps[k] = left / (len(col) - 1)
+            left = cap - (FIRST_LINE if n == 0 else top) - sum(heights[k] for k in col)
+            lines = max(0, int(left // top))
+            each, extra = divmod(lines, len(col) - 1)
+            for i, k in enumerate(col[1:]):
+                gaps[k] = each + (1 if i < extra else 0)
+        # elsewhere (last column, overlong problems): one line between problems
+        for k in range(1, len(heights)):
+            if k not in breaks and k not in gaps:
+                gaps[k] = 1
         return breaks, gaps
 
     @staticmethod

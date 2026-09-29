@@ -6,7 +6,16 @@ need to be plausible; they matter for viewers that trust the cached layout.
 import unicodedata
 
 
+# 한글 lays text out about 2% narrower than the table below says
+# (fitted against line breaks in files saved by 한글)
+SCALE = 0.98
+
+
 def char_em(ch):
+    return _char_em(ch) * SCALE
+
+
+def _char_em(ch):
     o = ord(ch)
     if ch in (' ', '\u00a0'):
         return 0.36
