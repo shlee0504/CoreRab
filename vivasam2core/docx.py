@@ -265,7 +265,7 @@ def parse(path):
         if child.tag == W + 'p':
             text = ''.join(t.text or '' for t in child.iter(W + 't')).strip()
             if not doc.title and text:
-                doc.title = re.sub(r'\s*실전\s*문제\s*', ' ', text).strip()
+                doc.title = re.sub(r'\s*실전\s*문제\s*', ' ', text).strip().lstrip('■▣ ')
             continue
         if child.tag != W + 'tbl':
             continue
@@ -326,7 +326,7 @@ def parse_flat(doc):
             para = doc.para(child)
             text = para.text.strip()
             if not doc.title and text:
-                doc.title = re.sub(r'\s*실전\s*문제\s*', ' ', text).strip()
+                doc.title = re.sub(r'\s*실전\s*문제\s*', ' ', text).strip().lstrip('■▣ ')
             if not in_tail and started and TAIL_START.match(text):
                 in_tail = True
             if in_tail:
