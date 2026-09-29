@@ -17,7 +17,7 @@ from . import hwp5
 from .hwp5 import (Record, TAG_PARA_HEADER, TAG_PARA_TEXT, TAG_CTRL_HEADER,
                    TAG_SHAPE_COMPONENT_PICTURE)
 from .docinfo import DocInfo, CS_UNDERLINE, CS_SUBSCRIPT, CS_SUPERSCRIPT, CS_BOLD
-from .hwpbuild import Ctx, Para, Table, Cell, Picture, TemplateTable, CTRL_TBL
+from .hwpbuild import Ctx, Para, Table, Cell, Picture, TemplateTable, ColumnDef, CTRL_TBL
 from . import layout
 from . import vivasam as V
 
@@ -44,6 +44,8 @@ BF_LABEL = 16
 BOX_WIDTH = 27256
 LABEL_COL = 2853
 COLUMN_WIDTH = 27780
+PAGE_WIDTH = 2 * COLUMN_WIDTH + 1133     # one column across the page (해설)
+BOX_MARGIN = COLUMN_WIDTH - BOX_WIDTH
 
 RED_OF = {CS_TEXT: CS_RED_TEXT, CS_TABLE_TEXT: CS_RED_TEXT, CS_CHOICE: CS_RED_CHOICE}
 
@@ -557,12 +559,25 @@ class Converter:
         # drop trailing blanks
         while len(paras) > 1 and not paras[-1].segments:
             paras.pop()
-        if self.tail and self.answer_mode:
-            paras.extend(self.tail_paras(self.tail))
         for i, p in enumerate(paras):
             r, _ = p.build(self.ctx, 0, last=(i == len(paras) - 1))
             recs.extend(r)
-        return recs
+        sections = [recs]
+        tail = self.tail_paras(self.tail) if self.tail and self.answer_mode else []
+        if tail:
+            # explanations: a new section (new page) laid out in one column
+            recs = [self.one_column(r) for r in self.tpl.preamble(title)]
+            for i, p in enumerate(tail):
+                r, _ = p.build(self.ctx, 0, last=(i == len(tail) - 1))
+                recs.extend(r)
+            sections.append(recs)
+        return sections
+
+    @staticmethod
+    def one_column(r):
+        if r.tag != TAG_CTRL_HEADER or r.data[:4] != b'dloc':
+            return r
+        return Record(r.tag, r.level, ColumnDef(r.data, 1).data)
 
     def tail_paras(self, blocks):
         """Answer table and explanations kept from the source (new page)."""
@@ -570,7 +585,7 @@ class Converter:
         bold = self.cs(CS_TEXT, frozenset({'b'}))
         for b in blocks:
             if isinstance(b, V.Table):
-                t = self.grid_table(b, BOX_WIDTH, header_rows=1)
+                t = self.grid_table(b, PAGE_WIDTH - BOX_MARGIN, header_rows=1)
                 out.append(Para(PS_BODY2, ST_NORMAL, cs=CS_TEXT).add_ctrl(t, CS_TEXT))
                 continue
             text = b.text.strip()
@@ -594,8 +609,8 @@ class Converter:
                 out.append(self.runs_para(b.runs, ps, ST_BASIC, CS_TEXT))
         while out and not out[0].segments:
             out.pop(0)
-        if out:
-            out[0].split = 0x04
+        for p in out:
+            p.width = PAGE_WIDTH
         return out
 
     def prv_text(self, problems):
@@ -606,7 +621,7 @@ class Converter:
         return text.encode('utf-16-le')
 
     def write(self, problems, title, out_path):
-        section = self.build_section(problems, title)
+        sections = self.build_section(problems, title)
         streams = {}
         for name, data in self.tpl.streams.items():
             if name.startswith('BinData/') or name in ('PrvImage',):
@@ -619,12 +634,15 @@ class Converter:
             streams['BinData/BIN%04X.%s' % (bid, ext)] = self.tpl.streams[src[0]]
         for bid, ext, data in self.ctx.bindata:
             streams['BinData/BIN%04X.%s' % (bid, ext)] = hwp5.deflate(data)
+        for k, sec in enumerate(sections):
+            streams['BodyText/Section%d' % k] = hwp5.deflate(hwp5.serialize_records(sec))
+        self.di.set_section_count(len(sections))
         streams['DocInfo'] = hwp5.deflate(hwp5.serialize_records(self.di.records))
-        streams['BodyText/Section0'] = hwp5.deflate(hwp5.serialize_records(section))
         streams['PrvText'] = self.prv_text(problems)
-        order = ['FileHeader', 'DocInfo', 'BodyText/Section0'] + \
+        body = ['BodyText/Section%d' % k for k in range(len(sections))]
+        order = ['FileHeader', 'DocInfo'] + body + \
                 sorted(n for n in streams if n.startswith('BinData/')) + \
-                [n for n in streams if n not in ('FileHeader', 'DocInfo', 'BodyText/Section0')
+                [n for n in streams if n not in ['FileHeader', 'DocInfo'] + body
                  and not n.startswith('BinData/')]
         return hwp5.write_hwp(out_path, streams, self.tpl.clsid, order=order)
 

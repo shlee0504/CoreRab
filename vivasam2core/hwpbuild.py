@@ -54,6 +54,25 @@ class Ctx:
         return bid
 
 
+# ------------------------------------------------------------------ columns
+
+class ColumnDef:
+    """Column definition control (단 설정) taken from the template, with a new
+    column count; placed at the start of a paragraph to change the layout."""
+    char_code = 0x0002
+    width = height = 0
+
+    def __init__(self, template_data, count):
+        d = bytearray(template_data)
+        self.ctrl_id = bytes(d[:4])
+        attr, = struct.unpack_from('<H', d, 4)
+        struct.pack_into('<H', d, 4, (attr & ~(0xFF << 2)) | (count << 2))
+        self.data = bytes(d)
+
+    def build(self, ctx, level):
+        return [Record(TAG_CTRL_HEADER, level, self.data)]
+
+
 # ------------------------------------------------------------------ paragraph
 
 class Para:
@@ -97,9 +116,10 @@ class Para:
                         units.append((list(struct.unpack('<%dH' % (len(b) // 2), b)), seg[2]))
             else:
                 ctrl = seg[1]
+                code = getattr(ctrl, 'char_code', 0x000B)
                 lo, hi = struct.unpack('<HH', ctrl.ctrl_id)
-                units.append(([0x000B, lo, hi, 0, 0, 0, 0, 0x000B], seg[2]))
-                mask |= 1 << 0x0B
+                units.append(([code, lo, hi, 0, 0, 0, 0, code], seg[2]))
+                mask |= 1 << code
         return units, mask
 
     def build(self, ctx, level, last=False, y0=0):

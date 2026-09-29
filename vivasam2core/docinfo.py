@@ -57,6 +57,12 @@ class DocInfo:
             struct.pack_into('<III', d, 14, 0, 0, 0)
         self.records[self.records.index(r)] = Record(r.tag, r.level, d)
 
+    def set_section_count(self, n):
+        r = next(r for r in self.records if r.tag == TAG_DOCUMENT_PROPERTIES)
+        d = bytearray(r.data)
+        struct.pack_into('<H', d, 0, n)
+        self.records[self.records.index(r)] = Record(r.tag, r.level, d)
+
     # -- bin data
     def keep_bindata(self, keep_ids):
         """Drop BIN_DATA entries not in keep_ids; returns old->new id map."""
