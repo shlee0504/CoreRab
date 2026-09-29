@@ -40,6 +40,15 @@ ST_BOGI = 1          # 보기 ㄱ, ㄴ, ㄷ
 ST_CHOICE = 2        # 5행답항
 BF_BOX = 3
 BF_LABEL = 16
+HEAD_FILL = 0xF2F2F2       # 가장 옅은 셀 음영 (하양 5% 어둡게)
+NOTE_SIZE = 800            # ※ 용어 풀이: 8pt
+# column layout (HWPUNIT): body height of the template page, and safety
+# margins because 한글 breaks lines a little differently from our estimate
+COLUMN_HEIGHT = 84188 - 2 * 1417 - 4251 - 2835
+FILL = 0.94                # plan columns this full at most
+SPREAD = 0.8               # share this much of the room left between problems
+FIRST_LINE = 1600          # the (empty) first paragraph of the page
+TABLE_MARGIN = 600         # outer margins of a table/box
 
 BOX_WIDTH = 27256
 LABEL_COL = 2853
@@ -163,6 +172,8 @@ class Converter:
             raise ValueError('header pictures would need renumbering: %r' % mapping)
         self.kept_bin = sorted(mapping)
         self.di.reset_caret()
+        # table headings: the lightest grey cell shading
+        self.bf_head = self.di.derive_border_fill(BF_LABEL, HEAD_FILL)
         self.ctx = Ctx(self.di)
         self.warnings = []
         self.tail = None
@@ -192,14 +203,18 @@ class Converter:
         return self.di.derive_para_shape(base, indent=ind)
 
     def runs_para(self, runs, ps, style, base_cs, red=False, width=COLUMN_WIDTH, prefix=''):
-        p = Para(ps, style, width=width, cs=self.cs(base_cs, red=red))
+        note = ''.join(r.text for r in runs).lstrip().startswith('※')
+        def cs(fmt=frozenset()):
+            c = self.cs(base_cs, fmt, red=red)
+            return self.di.derive_char_shape(c, size=NOTE_SIZE) if note else c
+        p = Para(ps, style, width=width, cs=cs())
         if prefix:
-            p.add_text(prefix, self.cs(base_cs, red=red))
+            p.add_text(prefix, cs())
         for r in runs:
             text = r.text.replace('\r', '').replace('\n', ' ')
             if V.EXAMPLE_MARK in text:
                 text = text.replace(V.EXAMPLE_MARK, '')
-            p.add_text(text, self.cs(base_cs, r.fmt, red=red))
+            p.add_text(text, cs(r.fmt))
         return p
 
     def text_para(self, text, ps, style, cs, width=COLUMN_WIDTH):
@@ -254,7 +269,7 @@ class Converter:
                               bf=BF_BOX, flags=0x05000020))
         return Table(len(rows), 2, cells, hdr_props=0x082A2211, tbl_props=0x04000006, bf=BF_BOX)
 
-    def grid_table(self, t, width=BOX_WIDTH, red_row=None, header_rows=0):
+    def grid_table(self, t, width=BOX_WIDTH, red_row=None, header_rows=None):
         # column widths from the first cells that do not span
         colw = {}
         for c in t.cells:
@@ -271,6 +286,11 @@ class Converter:
         scale = width / float(total)
         widths = [int(colw.get(k, 1000) * scale) for k in range(t.cols)]
         widths[-1] += width - sum(widths)
+        # heading cells: the first row, and the first column of a table laid
+        # out sideways (항목 | 현금 | 비품 … / 금액 | 600 | 300 …)
+        if header_rows is None:
+            header_rows = 1 if t.rows > 1 and t.cols > 1 else 0
+        head_col = t.rows == 2 and t.cols >= 3 and header_rows > 0
         cells = []
         for c in t.cells:
             w = sum(widths[c.col:c.col + c.colspan])
@@ -284,9 +304,9 @@ class Converter:
                     paras.append(self.picture_para(b, w - 400))
             if not paras:
                 paras.append(Para(PS_CENTER, ST_NORMAL, cs=base))
-            shaded = c.row < header_rows or c.shaded
+            shaded = c.row < header_rows or c.shaded or (head_col and c.col == 0)
             cells.append(Cell(c.row, c.col, w, paras, rowspan=c.rowspan, colspan=c.colspan,
-                              bf=BF_LABEL if shaded else BF_BOX, flags=0x01000020,
+                              bf=self.bf_head if shaded else BF_BOX, flags=0x01000020,
                               margins=(200, 200, 141, 141)))
         return Table(t.rows, t.cols, cells, hdr_props=0x082A2211, tbl_props=0x04000006, bf=BF_BOX)
 
@@ -554,14 +574,36 @@ class Converter:
     def build_section(self, problems, title):
         recs = list(self.tpl.preamble(title))
         paras = []
+        starts = []
         for n, prob in enumerate(problems, 1):
+            starts.append(len(paras))
             self.convert_problem(prob, n, paras)
         # drop trailing blanks
         while len(paras) > 1 and not paras[-1].segments:
             paras.pop()
-        for i, p in enumerate(paras):
-            r, _ = p.build(self.ctx, 0, last=(i == len(paras) - 1))
-            recs.extend(r)
+        built = [p.build(self.ctx, 0) for p in paras]
+        heights = [h + self.para_extra(p) for p, (_, h) in zip(paras, built)]
+        units = [(a, b) for a, b in zip(starts, starts[1:] + [len(paras)]) if a < b]
+        breaks, gaps = self.arrange(units, heights)
+        blank = self.blank()
+        blank_recs, blank_h = blank.build(self.ctx, 0)
+        blank_h += self.para_extra(blank)
+        body = []
+        for k, (a, b) in enumerate(units):
+            for i in range(a, b):
+                r = [x.copy() for x in built[i][0]]
+                if i == a and k in breaks:
+                    d = bytearray(r[0].data)
+                    d[11] |= 0x08                     # 단 나누기
+                    r[0] = Record(r[0].tag, r[0].level, d)
+                body.extend(r)
+            for _ in range(int(gaps.get(k, 0) // blank_h)):
+                body.extend(x.copy() for x in blank_recs)
+        last = max(i for i, r in enumerate(body) if r.tag == TAG_PARA_HEADER and r.level == 0)
+        d = bytearray(body[last].data)
+        struct.pack_into('<I', d, 0, struct.unpack_from('<I', d, 0)[0] | 0x80000000)
+        body[last] = Record(body[last].tag, 0, d)
+        recs.extend(body)
         sections = [recs]
         tail = self.tail_paras(self.tail) if self.tail and self.answer_mode else []
         if tail:
@@ -572,6 +614,46 @@ class Converter:
                 recs.extend(r)
             sections.append(recs)
         return sections
+
+    def para_extra(self, p):
+        """Space around a paragraph not counted in its line heights."""
+        info = self.di.para_shape_info(p.ps)
+        extra = (info['prev'] + info['next']) // 2
+        if any(seg[0] == 'c' for seg in p.segments):
+            extra += TABLE_MARGIN
+        return extra
+
+    def arrange(self, units, heights):
+        """Put whole problems in each column, like a printed workbook: a
+        problem that does not fit starts the next column (단 나누기) and the
+        space left in a column is shared out between its problems.
+        Returns (units starting a column, {unit: extra space after it})."""
+        cap = COLUMN_HEIGHT * FILL
+        cols = [[]]
+        used = FIRST_LINE
+        spill = []
+        for k, (a, b) in enumerate(units):
+            h = sum(heights[a:b])
+            if cols[-1] and used + h > cap:
+                cols.append([])
+                used = 0
+            cols[-1].append((k, h))
+            used += h
+            if used > cap:                  # taller than a column: runs over
+                spill.append(len(cols) - 1)
+                cols.append([])
+                used %= COLUMN_HEIGHT
+        cols = [c for c in cols if c]
+        breaks = {c[0][0] for c in cols[1:]}
+        gaps = {}
+        for n, col in enumerate(cols[:-1]):
+            if n in spill or n - 1 in spill or len(col) < 2:
+                continue
+            first = FIRST_LINE if n == 0 else 0
+            left = (cap - first - sum(h for _, h in col)) * SPREAD
+            for k, _ in col[:-1]:
+                gaps[k] = left / (len(col) - 1)
+        return breaks, gaps
 
     @staticmethod
     def one_column(r):

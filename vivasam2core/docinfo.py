@@ -2,7 +2,7 @@
 import struct
 
 from .hwp5 import (Record, TAG_ID_MAPPINGS, TAG_BIN_DATA, TAG_CHAR_SHAPE,
-                   TAG_PARA_SHAPE, TAG_DOCUMENT_PROPERTIES)
+                   TAG_PARA_SHAPE, TAG_DOCUMENT_PROPERTIES, TAG_BORDER_FILL)
 
 # index of each list inside HWPTAG_ID_MAPPINGS
 IDX_BINDATA = 0
@@ -48,6 +48,24 @@ class DocInfo:
         self.records.insert(pos, Record(tag, level, data))
         self._set_count(idx, len(same) + 1)
         return len(same)          # zero-based index of the new item
+
+    def derive_border_fill(self, base_id, fill_color):
+        """Copy of border fill `base_id` (1-based) with a solid fill colour
+        (0xBBGGRR); returns the new 1-based id."""
+        key = ('bf', base_id, fill_color)
+        if key in self._derived:
+            return self._derived[key]
+        d = bytearray(self.items(TAG_BORDER_FILL)[base_id - 1].data)
+        assert struct.unpack_from('<I', d, 32)[0] & 1, 'base border fill has no solid fill'
+        struct.pack_into('<I', d, 36, fill_color)
+        d = bytes(d)
+        for i, r in enumerate(self.items(TAG_BORDER_FILL)):
+            if r.data == d:
+                self._derived[key] = i + 1
+                return i + 1
+        new = self._append(TAG_BORDER_FILL, d, IDX_BORDERFILL) + 1
+        self._derived[key] = new
+        return new
 
     # -- document properties
     def reset_caret(self):
