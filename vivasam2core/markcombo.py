@@ -91,7 +91,7 @@ def mark(src, dst):
     tail = next(s for s, e in spans[1:] if sec[s].data[11] & 0x04)
     body = [(s, e) for s, e in spans if s < tail]
     stems = [s for s, e in body if struct.unpack_from('<H', sec[s].data, 8)[0] == PS_STEM]
-    heads = [s for s, e in body if text_of(sec, s).lstrip().startswith('■')]
+    heads = [s for s, e in body if text_of(sec, s).lstrip().startswith(('■', '▣'))]
     bounds = sorted(set(stems + heads + [tail]))
 
     expl = {}

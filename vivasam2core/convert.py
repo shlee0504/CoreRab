@@ -122,7 +122,7 @@ PREFIX_RE = re.compile(r'^(\s*(?:•|·|○|-|※)\s*|\s*[갑을병정무]\s*[:.
                        r'\s*\((?:[가-하])\)\s*|\s*[㈎-㈛]\s*|\s*[ㄱ-ㅎ]\.\s*|\s*[A-Z]\.\s*|\s*[①-⑩⑴-⑽]\s*)')
 LINE_LABEL_RE = re.compile(r'^\s*([A-E]|[갑을병정무])\s*:')
 COMBO_RE = re.compile(r'^\s*([A-E]|[갑을병정무])(\s*,\s*([A-E]|[갑을병정무]))*\s*$')
-SECTION_LINE = re.compile(r'^\s*■')
+SECTION_LINE = re.compile(r'^\s*[■▣]')
 LABEL_START_RE = re.compile(r'^\s*(\([가-하]\)|[㈎-㈛])\s*')
 BOGI_LABEL_RE = re.compile(r'^\s*([ㄱ-ㅎ]|[갑을병정무])\s*[.．]')
 
@@ -334,7 +334,7 @@ class Converter:
             cols[lc + 1] -= extra // 2
             tt.set_column_widths(cols)
         tt.replacements[label_pos] = [self.text_para(text, 28, ST_BASIC, CS_TEXT)]
-        tt.replacements[content_pos] = paras
+        tt.replacements[content_pos] = paras or [self.blank(PS_BODY, ST_BASIC)]
         return tt
 
     # -- passages

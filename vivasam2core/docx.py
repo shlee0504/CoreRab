@@ -151,6 +151,20 @@ class DocxDoc:
         return V.Table(len(rows), ncols, cells, width)
 
 
+def _bogi_items(blocks):
+    """<보기> items; items laid out in a table (ㄱ | ㄴ / ㄷ | ㄹ) are read
+    row by row."""
+    items = []
+    for x in blocks:
+        if isinstance(x, V.Para):
+            if x.text.strip():
+                items.append(x)
+        elif isinstance(x, V.Table):
+            for c in sorted(x.cells, key=lambda c: (c.row, c.col)):
+                items.extend(_bogi_items(c.blocks))
+    return items
+
+
 def _elements(doc, blocks):
     els = []
     for b in blocks:
@@ -164,13 +178,12 @@ def _elements(doc, blocks):
                     label = re.sub(r'\s+', '', m.group(1))
                     body = inner[inner.index(first) + 1:]
                     if label == '보기':
-                        els.append(V.Element('bogi', label='보기',
-                                             items=[x for x in body if isinstance(x, V.Para)]))
+                        els.append(V.Element('bogi', label='보기', items=_bogi_items(body)))
                     else:
                         els.append(V.Element('keybox', label=m.group(1).strip(), blocks=body))
                     continue
             if kind == 'bogi':
-                els.append(V.Element('bogi', label=info[0], items=[x for x in info[1] if isinstance(x, V.Para)]))
+                els.append(V.Element('bogi', label=info[0], items=_bogi_items(info[1])))
             elif kind == 'keybox':
                 els.append(V.Element('keybox', label=info[0], blocks=info[1]))
             elif kind == 'inline_choices':
@@ -292,7 +305,7 @@ def parse(path):
 
 
 TAIL_START = re.compile(r'^\s*(정답\s*및\s*해설|정답표|해설)\s*$')
-SECTION_RE = re.compile(r'^\s*■')
+SECTION_RE = re.compile(r'^\s*[■▣]')
 ANSWER_LINE = re.compile(r'^\s*(\d{1,3})\s*\.\s*정답\s*([①-⑤](?:\s*,\s*[①-⑤])*|[ㄱ-ㅎ](?:\s*,\s*[ㄱ-ㅎ])*)')
 
 

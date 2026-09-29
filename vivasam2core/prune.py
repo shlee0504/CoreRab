@@ -114,7 +114,7 @@ def prune(src, dst):
         t = text_of(sec, s)
         if ps == PS_STEM:
             stems.append(s)
-        elif t.lstrip().startswith('■'):
+        elif t.lstrip().startswith(('■', '▣')):
             sections.append((s, len(stems)))
     n = len(stems)
     delete = {i + 1 for i, s in enumerate(stems) if MARK in text_of(sec, s)}
@@ -139,7 +139,7 @@ def prune(src, dst):
         m = re.match(r'^(\d+)\s*\.\s*정답', t)
         if m:
             expl[int(m.group(1))] = (s, e)
-        elif t.lstrip().startswith('■'):
+        elif t.lstrip().startswith(('■', '▣')):
             tail_sections.append(s)
     for k in delete:
         if k in expl:
