@@ -365,4 +365,88 @@ def parse_flat(doc):
         prob.answer = answers.get(num, '')
         prob.section = sec
         out.append(prob)
+    if not out and any(ESSAY_RE.match(b.text) for b in doc.tail + _all_paras(doc)):
+        return parse_essay(doc)
     return doc, out
+
+
+ESSAY_RE = re.compile(r'^\s*서술형\s*(\d+)\s+')
+SUB_RE = re.compile(r'^\s*\((\d)\)\s*')
+SET_RE = re.compile(r'모의고사\s*(\d+)\s*회')
+
+
+def _all_paras(doc):
+    body = doc.root.find(W + 'body')
+    return [doc.para(c) for c in body if c.tag == W + 'p']
+
+
+def parse_essay(doc):
+    """서술형 sets: '서술형 N  stem', passage paragraphs, '(1) …' questions and
+    a '모범 답안' block with '(1)\t…' answers.  Several sets ('모의고사 N회')
+    may follow one another; each becomes a section."""
+    paras = [p for p in _all_paras(doc) if p.text.strip()]
+    doc.tail = []
+    doc.title = ''
+    heads = []
+    out = []
+    cur = None
+    section = None
+    mode = None                       # passage | sub | answer
+    for para in paras:
+        text = para.text.strip()
+        if re.match(r'^\d{4}\s*학년도', text):      # running header of each set
+            continue
+        m = SET_RE.search(text)
+        if m and not ESSAY_RE.match(text):
+            name = re.sub(r'\s+', ' ', text)
+            heads.append(name)
+            section = V.Para([V.Run('▣ ' + name)])
+            continue
+        m = ESSAY_RE.match(text)
+        if m:
+            stem = V.Para(list(para.runs), para.align)
+            V._strip_prefix(stem, m.end())
+            cur = dict(stem=stem, passage=[], subs=[], answers=[], section=section)
+            section = None
+            out.append(cur)
+            mode = 'passage'
+            continue
+        if cur is None:
+            continue
+        if text.replace(' ', '') in ('모범답안', '예시답안', '답안'):
+            mode = 'answer'
+            continue
+        m = SUB_RE.match(text)
+        if mode == 'answer':
+            if m:
+                cur['answers'].append([text[m.end():].strip()])
+            elif cur['answers']:
+                cur['answers'][-1].append(text)
+            continue
+        if m:
+            mode = 'sub'
+            sub = V.Para(list(para.runs), para.align)
+            V._strip_prefix(sub, m.end())
+            sub = V.Para([V.Run(V.PAREN_NUM[int(m.group(1)) - 1] + ' ')] + sub.runs, sub.align)
+            cur['subs'].append(sub)
+        elif mode == 'passage':
+            cur['passage'].append(V.Para([V.Run(r.text.replace('\t', ' '), r.fmt) for r in para.runs], para.align))
+    # title: the set name without its number, e.g. '국제경제 모의고사 서술형'
+    if heads:
+        base = re.sub(r'\s*\d+\s*회', '', heads[0])
+        nums = [int(SET_RE.search(h).group(1)) for h in heads]
+        doc.title = '%s(%d~%d회)' % (base, min(nums), max(nums)) if len(nums) > 1 else heads[0]
+    problems = []
+    for c in out:
+        els = []
+        if c['passage']:
+            els.append(V.Element('passage', blocks=c['passage']))
+        for sub in c['subs']:
+            els.append(V.Element('subq', blocks=[sub]))
+            els.append(V.Element('space', count=3))
+        prob = V.Problem(c['stem'], els)
+        prob.answer = ' '.join('%s%s%s' % (V.PAREN_NUM[i], V.EXAMPLE_MARK, '\n'.join(a))
+                               for i, a in enumerate(c['answers']))
+        prob.section = c['section']
+        problems.append(prob)
+    return doc, problems

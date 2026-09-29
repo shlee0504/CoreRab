@@ -341,6 +341,9 @@ class Converter:
     def passage_paras(self, el):
         """Return list of Para for a passage element (box, label table, grid)."""
         if el.table is None:
+            lab = self.labelled_rows(el.blocks)
+            if lab:
+                return [Para(PS_BODY, ST_BASIC, cs=CS_TEXT).add_ctrl(self.label_table(lab), CS_TEXT)]
             return self.boxed_blocks(el.blocks)
         t = el.table
         rows = V.split_label_rows(t)
