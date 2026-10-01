@@ -550,8 +550,8 @@ class Converter:
         out = []
         done = False
         for r in runs:
-            if not done and re.search(r'(<\s*보\s*기\s*>에서|만을)\s*고른', r.text):
-                r = V.Run(re.sub(r'(<\s*보\s*기\s*>에서|만을)\s*고른', r'\1 있는 대로 고른', r.text, count=1), r.fmt)
+            if not done and re.search(r'([<〈＜]\s*보\s*기\s*[>〉＞]에서|만을)\s*고른', r.text):
+                r = V.Run(re.sub(r'([<〈＜]\s*보\s*기\s*[>〉＞]에서|만을)\s*고른', r'\1 있는 대로 고른', r.text, count=1), r.fmt)
                 done = True
             out.append(r)
         return out
@@ -694,7 +694,7 @@ class Converter:
             text = b.text.strip()
             if not text:
                 out.append(self.blank())
-            elif text in ('정답표', '해설', '정답 및 해설'):
+            elif re.match(r'^(정답표|해설|정답\s*및\s*해설)\s*[\d~\s-]*$', text):
                 out.append(self.text_para(text, PS_CENTER, ST_NORMAL, bold))
             elif SECTION_LINE.match(text):
                 out.append(Para(PS_BODY, ST_BASIC, cs=bold).add_text(text, bold))

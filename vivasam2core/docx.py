@@ -304,7 +304,8 @@ def parse(path):
     return doc, out
 
 
-TAIL_START = re.compile(r'^\s*(정답\s*및\s*해설|정답표|해설)\s*$')
+TAIL_START = re.compile(r'^\s*(정답\s*및\s*해설|정답표|해설)\s*([\d~\s-]*)$')
+PART_RE = re.compile(r'^\s*실전\s*문제\s*\d+\s*~\s*\d+\s*$')   # '실전 문제 1~8'
 SECTION_RE = re.compile(r'^\s*[■▣]')
 ANSWER_LINE = re.compile(r'^\s*(\d{1,3})\s*\.\s*정답\s*([①-⑤](?:\s*,\s*[①-⑤])*|[ㄱ-ㅎ](?:\s*,\s*[ㄱ-ㅎ])*)')
 
@@ -319,6 +320,7 @@ def parse_flat(doc):
     section = None
     in_tail = False
     started = False
+    plain = False
     for child in body:
         if child.tag not in (W + 'p', W + 'tbl'):
             continue
@@ -335,6 +337,10 @@ def parse_flat(doc):
             if SECTION_RE.match(text):
                 started = True
                 section = para
+                continue
+            if PART_RE.match(text):           # page group heading, not printed
+                started = True
+                plain = True
                 continue
             m = STEM_RE.match(text)
             if m and started:
@@ -361,13 +367,57 @@ def parse_flat(doc):
                 answers[int(m.group(1))] = m.group(2)
     out = []
     for num, stem, blocks, sec in problems:
-        prob = V.Problem(stem, _elements(doc, blocks))
+        prob = V.Problem(stem, _plain_elements(doc, blocks) if plain else _elements(doc, blocks))
         prob.answer = answers.get(num, '')
         prob.section = sec
         out.append(prob)
     if not out and any(ESSAY_RE.match(b.text) for b in doc.tail + _all_paras(doc)):
         return parse_essay(doc)
     return doc, out
+
+
+BOGI_HEAD = re.compile(r'^\s*[<〈＜]\s*보\s*기\s*[>〉＞]\s*$')
+
+
+def _choice_table(t):
+    """A table whose first column numbers the choices (구분 | ① | ② …)."""
+    first = [''.join(getattr(x, 'text', '') for x in c.blocks).strip()
+             for c in sorted(t.cells, key=lambda c: c.row) if c.col == 0]
+    marks = [f for f in first if f[:1] in V.CIRCLED[:5]]
+    return len(marks) >= 4 and all(len(f) <= 2 for f in marks)
+
+
+def _plain_elements(doc, blocks):
+    """Problems typed as plain paragraphs (no boxes): the lines before the
+    choices are the passage (one box, tables inside), a '〈보기〉' line
+    starts the <보기> items."""
+    i = 0
+    passage = []
+    while i < len(blocks):
+        b = blocks[i]
+        if isinstance(b, V.Para) and (BOGI_HEAD.match(b.text) or b.text.strip()[:1] in V.CIRCLED[:5]):
+            break
+        if isinstance(b, V.Table) and _choice_table(b):     # choices laid out in a table
+            break
+        passage.append(b)
+        i += 1
+    els = []
+    if i < len(blocks) and isinstance(blocks[i], V.Table):
+        if passage:
+            els.append(V.Element('passage', blocks=passage))
+        els.append(V.Element('match_table', table=blocks[i]))
+        return els + _elements(doc, blocks[i + 1:])
+    if passage:
+        els.append(V.Element('passage', blocks=passage))
+    rest = blocks[i:]
+    if rest and isinstance(rest[0], V.Para) and BOGI_HEAD.match(rest[0].text):
+        j = 1
+        while j < len(rest) and isinstance(rest[j], V.Para) and rest[j].text.strip()[:1] not in V.CIRCLED[:5]:
+            j += 1
+        els.append(V.Element('bogi', label='보기', items=[x for x in rest[1:j] if x.text.strip()]))
+        rest = rest[j:]
+    els.extend(_elements(doc, rest))
+    return els
 
 
 ESSAY_RE = re.compile(r'^\s*서술형\s*(\d+)\s+')
